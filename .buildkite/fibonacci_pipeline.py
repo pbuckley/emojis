@@ -46,34 +46,57 @@ def fibonacci(n: int) -> int:
     return fibonacci(n - 1) + fibonacci(n - 2)
 
 
-def load_emoji_options(markdown_file: str = "README.md") -> List[str]:
+def load_emoji_options(markdown_file: str = "emojis.md") -> List[str]:
     """
-    Load emoji options from a markdown file.
+    Load emoji options from Buildkite emoji markdown format.
 
-    Reads each line as a potential emoji option, filtering out empty lines
-    and comments. Like parsing a config file but more fun!
+    Parses the Buildkite emoji table format to extract emoji aliases.
+    Like parsing a routing table - we need to extract the key identifiers!
+
+    Expected format:
+    | <img src="..." alt="nats"/> | `:nats:`, `:nats-io:` |
 
     Args:
-        markdown_file: Path to markdown file containing emoji options
+        markdown_file: Path to Buildkite emoji markdown file
 
     Returns:
-        List of emoji strings
+        List of emoji alias strings (with colons)
     """
-    emoji_file = Path(markdown_file)
-    default_emojis = ["🔥", "⚡", "🚀", "💎", "🌟", "🎯", "🔮", "⭐", "💫", "🌈"]
+    import re
 
+    emoji_file = Path(markdown_file)
+    default_emojis = [":buildkite:", ":rocket:", ":fire:", ":zap:", ":gem:", ":star:", ":sparkles:", ":rainbow:", ":art:", ":tada:"]
     if not emoji_file.exists():
-        # Default emoji set if file doesn't exist
+        # Default Buildkite emoji set if file doesn't exist
         return default_emojis
 
     emojis = []
-    with emoji_file.open('r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                emojis.append(line)
+    emoji_pattern = re.compile(r'<img[^>]+alt="([^"]+)"[^>]*\/>\s*\|\s*(.+?)\s*\|')
 
-    return emojis if emojis else default_emojis
+    with emoji_file.open('r', encoding='utf-8') as f:
+        content = f.read()
+
+        # Find all emoji table rows
+        for match in emoji_pattern.finditer(content):
+            alt_text = match.group(1).strip()
+            aliases_text = match.group(2).strip()
+
+            # Extract all :emoji: aliases from the aliases column
+            alias_matches = re.findall(r'`:([^`]+):`', aliases_text)
+
+            if alias_matches:
+                # Use the first alias, but format it properly
+                primary_alias = f":{alias_matches[0]}:"
+                emojis.append(primary_alias)
+            elif alt_text:
+                # Fallback to alt text if no proper aliases found
+                emojis.append(f":{alt_text}:")
+
+    # If we couldn't parse any emojis, provide defaults
+    if not emojis:
+        return default_emojis
+
+    return emojis
 
 
 def generate_emoji_label(count: int, emoji_options: List[str]) -> str:
