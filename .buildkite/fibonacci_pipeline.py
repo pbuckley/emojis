@@ -140,6 +140,7 @@ def create_pipeline_step(
         "label": f"{emoji_label} Fib({fib_position}) = {current_fib_value}",
         "command": f"python3 .buildkite/fibonacci_pipeline.py --position {str(fib_position + 1).strip()} --max-depth {str(max_depth).strip()}",
         "key": f"fib-{fib_position}",
+        "depends_on": [f"fib-{str(fib_position -1).strip()}"],
         "env": {
             "FIBONACCI_POSITION": str(fib_position),
             "FIBONACCI_VALUE": str(current_fib_value)
