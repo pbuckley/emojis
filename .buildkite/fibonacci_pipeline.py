@@ -138,12 +138,7 @@ def create_pipeline_step(
 
     step = {
         "label": f"{emoji_label} Fib({fib_position}) = {current_fib_value}",
-        "command": [
-            "python3",
-            __file__,  # Self-referential like a recursive function
-            "--position", str(fib_position + 1),
-            "--max-depth", str(max_depth)
-        ],
+        "command": f"python3 {__file__} --position {str(fib_position + 1).strip()} --max-depth {str(max_depth).strip()}",
         "key": f"fib-{fib_position}",
         "env": {
             "FIBONACCI_POSITION": str(fib_position),
