@@ -46,7 +46,7 @@ def fibonacci(n: int) -> int:
     return fibonacci(n - 1) + fibonacci(n - 2)
 
 
-def load_emoji_options(markdown_file: str = "emojis.md") -> List[str]:
+def load_emoji_options(markdown_file: str = "README.md") -> List[str]:
     """
     Load emoji options from Buildkite emoji markdown format.
 
@@ -67,30 +67,20 @@ def load_emoji_options(markdown_file: str = "emojis.md") -> List[str]:
     emoji_file = Path(markdown_file)
     default_emojis = [":buildkite:", ":rocket:", ":fire:", ":zap:", ":gem:", ":star:", ":sparkles:", ":rainbow:", ":art:", ":tada:"]
     if not emoji_file.exists():
-        # Default Buildkite emoji set if file doesn't exist
+        print(f"Using default Buildkite emoji set since file {markdown_file} does not exist")
         return default_emojis
 
     emojis = []
-    emoji_pattern = re.compile(r'<img[^>]+alt="([^"]+)"[^>]*\/>\s*\|\s*(.+?)\s*\|')
+    emoji_pattern = re.compile(r'<img[^>]*>\s*\|\s*`:([^`]+):`')
 
     with emoji_file.open('r', encoding='utf-8') as f:
-        content = f.read()
+        for line in f:
+            line = line.strip()
+            match = emoji_pattern.search(line)
+            if match:
+                alias = match.group(1)  # First (and only) capture group
+                emojis.append(f":{alias}:")
 
-        # Find all emoji table rows
-        for match in emoji_pattern.finditer(content):
-            alt_text = match.group(1).strip()
-            aliases_text = match.group(2).strip()
-
-            # Extract all :emoji: aliases from the aliases column
-            alias_matches = re.findall(r'`:([^`]+):`', aliases_text)
-
-            if alias_matches:
-                # Use the first alias, but format it properly
-                primary_alias = f":{alias_matches[0]}:"
-                emojis.append(primary_alias)
-            elif alt_text:
-                # Fallback to alt text if no proper aliases found
-                emojis.append(f":{alt_text}:")
 
     # If we couldn't parse any emojis, provide defaults
     if not emojis:
@@ -174,7 +164,7 @@ def create_pipeline_step(
 def generate_dynamic_pipeline(
     starting_position: int = 1,
     max_depth: int = 10,
-    emoji_file: str = "emojis.md"
+    emoji_file: str = "README.md"
 ) -> Dict:
     """
     Generate the complete dynamic pipeline configuration.
@@ -291,8 +281,8 @@ def main():
 
     parser.add_argument(
         "--emoji-file",
-        default="emojis.md",
-        help="Markdown file containing emoji options (default: emojis.md)"
+        default="README.md",
+        help="Markdown file containing emoji options (default: README.md)"
     )
 
     parser.add_argument(
