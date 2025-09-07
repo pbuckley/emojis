@@ -54,7 +54,7 @@ def load_emoji_options(markdown_file: str = "README.md") -> List[str]:
     Like parsing a routing table - we need to extract the key identifiers!
 
     Expected format:
-    | <img src="..." alt="nats"/> | `:nats:`, `:nats-io:` |
+    <img src="img-buildkite-64/nats.png" width="20" height="20" alt="nats"/> | `:nats:`, `:nats-io:`
 
     Args:
         markdown_file: Path to Buildkite emoji markdown file
@@ -66,11 +66,14 @@ def load_emoji_options(markdown_file: str = "README.md") -> List[str]:
 
     emoji_file = Path(markdown_file)
     default_emojis = [":buildkite:", ":rocket:", ":fire:", ":zap:", ":gem:", ":star:", ":sparkles:", ":rainbow:", ":art:", ":tada:"]
+
     if not emoji_file.exists():
-        print(f"Using default Buildkite emoji set since file {markdown_file} does not exist")
+        print(f"DEBUG: Using default Buildkite emoji set since file {markdown_file} does not exist", file=sys.stderr)
         return default_emojis
 
     emojis = []
+    # Match lines with <img> tag followed by | and capture first :alias:
+    # Pattern: <img...> | `:something:`, other stuff
     emojis_pattern = re.compile(r'<img[^>]*>\s*\|\s*`:([^`]+):`')
 
     with emoji_file.open('r', encoding='utf-8') as f:
@@ -83,8 +86,10 @@ def load_emoji_options(markdown_file: str = "README.md") -> List[str]:
 
     # If we couldn't parse any emojis, provide defaults
     if not emojis:
+        print(f"DEBUG: No emojis parsed from {markdown_file}, using defaults", file=sys.stderr)
         return default_emojis
 
+    print(f"DEBUG: Loaded {len(emojis)} emojis from {markdown_file}", file=sys.stderr)
     return emojis
 
 
@@ -106,6 +111,7 @@ def generate_emoji_label(count: int, emoji_options: List[str]) -> str:
 
     # Choose a random emoji for this sequence
     chosen_emoji = random.choice(emoji_options)
+    # For groups, just use the emoji alias directly (no repetition for group title)
     return chosen_emoji
 
 
@@ -143,7 +149,7 @@ def create_pipeline_step(
         chosen_emoji = emoji_options[emoji_index]
 
         # Create label with emoji repeated (fib_position) times
-        emoji_label = chosen_emoji * min(fib_position, 10)  # Cap at 10 for readability
+        emoji_label = chosen_emoji * min(fib_position, 25)  # Increased from 10 to 25 for more visual impact
 
         sub_step = {
             "label": f"{emoji_label} Step {i + 1}/{current_fib_value}",
@@ -176,7 +182,7 @@ def create_pipeline_step(
 
 def generate_dynamic_pipeline(
     starting_position: int = 1,
-    max_depth: int = 10,
+    max_depth: int = 14,
     emoji_file: str = "README.md"
 ) -> Dict:
     """
@@ -201,15 +207,21 @@ def generate_dynamic_pipeline(
     emoji_options = load_emoji_options(emoji_file)
     steps = []
 
+    # Debug output
+    print(f"DEBUG: Starting pipeline generation with position={starting_position}, max_depth={max_depth}", file=sys.stderr)
+
     # Generate Fibonacci groups, limiting the number of groups (not position)
     groups_generated = 0
     current_position = starting_position
 
-    while groups_generated < max_depth and current_position <= 20:  # Cap position at 20
+    while groups_generated < max_depth and current_position <= 30:  # Position cap to prevent runaway
         current_fib_value = fibonacci(current_position)
 
-        # Skip if Fibonacci value gets too large (avoid overwhelming the UI)
-        if current_fib_value > 20:
+        print(f"DEBUG: Checking position {current_position}, Fib({current_position})={current_fib_value}, groups_generated={groups_generated}", file=sys.stderr)
+
+        # Only skip if we're creating truly massive individual groups that would break the UI
+        if current_fib_value > 5000:  # Much higher limit - let max_depth be the real control
+            print(f"DEBUG: Stopping - Fib({current_position}) = {current_fib_value} would create too many sub-steps", file=sys.stderr)
             break
 
         group_step = create_pipeline_step(
@@ -219,6 +231,8 @@ def generate_dynamic_pipeline(
             max_depth
         )
         steps.append(group_step)
+
+        print(f"DEBUG: Added group {groups_generated + 1}: Fib({current_position}) = {current_fib_value}", file=sys.stderr)
 
         groups_generated += 1
         current_position += 1
@@ -230,6 +244,8 @@ def generate_dynamic_pipeline(
             "command": f"echo 'Starting position {starting_position} would create Fibonacci value {fibonacci(starting_position)} steps'",
             "key": "too-large"
         }]
+
+    print(f"DEBUG: Final result - generated {len(steps)} groups", file=sys.stderr)
 
     pipeline = {
         "env": {
@@ -287,7 +303,7 @@ def main():
     """
     parser = argparse.ArgumentParser(
         description="Generate dynamic Buildkite pipeline using Fibonacci sequence",
-        epilog="Example: python3 fibonacci_pipeline.py --position 3 --max-depth 8"
+        epilog="Example: python3 .buildkite/fibonacci_pipeline.py --position 3 --max-depth 8"
     )
 
     parser.add_argument(
