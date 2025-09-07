@@ -71,16 +71,15 @@ def load_emoji_options(markdown_file: str = "README.md") -> List[str]:
         return default_emojis
 
     emojis = []
-    emoji_pattern = re.compile(r'<img[^>]*>\s*\|\s*`:([^`]+):`')
+    emojis_pattern = re.compile(r'<img[^>]*>\s*\|\s*`:([^`]+):`')
 
     with emoji_file.open('r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
-            match = emoji_pattern.search(line)
+            match = emojis_pattern.search(line)
             if match:
                 alias = match.group(1)  # First (and only) capture group
                 emojis.append(f":{alias}:")
-
 
     # If we couldn't parse any emojis, provide defaults
     if not emojis:
@@ -107,7 +106,7 @@ def generate_emoji_label(count: int, emoji_options: List[str]) -> str:
 
     # Choose a random emoji for this sequence
     chosen_emoji = random.choice(emoji_options)
-    return chosen_emoji * min(count, 10)  # Cap at 10 to keep labels readable
+    return chosen_emoji
 
 
 def create_pipeline_step(
@@ -117,47 +116,62 @@ def create_pipeline_step(
     max_depth: int = 10
 ) -> Dict:
     """
-    Create a single Buildkite pipeline step.
+    Create a Buildkite group step containing N sub-steps.
 
-    Each step is like a process that spawns child processes - it runs the same
-    script but with different parameters to create the next level of the tree.
+    Creates a group with current_fib_value number of echo steps inside,
+    each with different emoji patterns. Like organizing a team where each
+    member has a unique visual identifier but they all work together.
 
     Args:
         fib_position: Current position in Fibonacci sequence
-        current_fib_value: The Fibonacci value at current position
+        current_fib_value: The Fibonacci value at current position (number of sub-steps)
         emoji_options: Available emojis for labels
         max_depth: Maximum recursion depth to prevent infinite pipelines
 
     Returns:
-        Dictionary representing a Buildkite step
+        Dictionary representing a Buildkite group step
 
     Reference:
-        https://buildkite.com/docs/pipelines/command-step
+        https://buildkite.com/docs/pipelines/group-step
     """
-    emoji_label = generate_emoji_label(current_fib_value, emoji_options)
+    # Create the nested steps within this group
+    nested_steps = []
 
-    step = {
-        "label": f"{emoji_label} Fib({fib_position}) = {current_fib_value}",
-        "command": f"python3 .buildkite/fibonacci_pipeline.py --position {str(fib_position + 1).strip()} --max-depth {str(max_depth).strip()}",
-        "key": f"fib-{fib_position}",
-        "env": {
-            "FIBONACCI_POSITION": str(fib_position),
-            "FIBONACCI_VALUE": str(current_fib_value)
+    for i in range(current_fib_value):
+        # Choose a different emoji for each sub-step
+        emoji_index = i % len(emoji_options)
+        chosen_emoji = emoji_options[emoji_index]
+
+        # Create label with emoji repeated (fib_position) times
+        emoji_label = chosen_emoji * min(fib_position, 10)  # Cap at 10 for readability
+
+        sub_step = {
+            "label": f"{emoji_label} Step {i + 1}/{current_fib_value}",
+            "command": "echo foo",
+            "key": f"fib-{fib_position}-sub-{i + 1}",
+            "env": {
+                "FIBONACCI_POSITION": str(fib_position),
+                "FIBONACCI_VALUE": str(current_fib_value),
+                "SUB_STEP_INDEX": str(i + 1)
+            }
         }
+
+        nested_steps.append(sub_step)
+
+    # Create the main group step
+    group_emoji = generate_emoji_label(current_fib_value, emoji_options)
+
+    group_step = {
+        "group": f"{group_emoji} Fib({fib_position}) = {current_fib_value}",
+        "key": f"fib-{fib_position}",
+        "steps": nested_steps
     }
 
-    # Add dependency on previous Fibonacci step (except for the first step)
+    # Add dependency on previous Fibonacci group (except for the first group)
     if fib_position > 1:
-        step["depends_on"] = f"fib-{fib_position - 1}"
+        group_step["depends_on"] = f"fib-{fib_position - 1}"
 
-    # Add retry logic for demo resilience
-    step["retry"] = {
-        "automatic": [
-            {"exit_status": "*", "limit": 2}
-        ]
-    }
-
-    return step
+    return group_step
 
 
 def generate_dynamic_pipeline(
@@ -328,7 +342,7 @@ def main():
         upload_pipeline(pipeline_config)
 
     print(f"Generated pipeline with {len(pipeline_config['steps'])} steps "
-          f"for Fibonacci position {args.position}", file=sys.stderr)
+          f"for Fibonacci starting at position {args.position}", file=sys.stderr)
 
 
 if __name__ == "__main__":
