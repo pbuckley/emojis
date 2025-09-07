@@ -300,8 +300,8 @@ def main():
     parser.add_argument(
         "--max-depth",
         type=int,
-        default=10,
-        help="Maximum recursion depth to prevent infinite pipelines (default: 10)"
+        default=14,
+        help="Maximum recursion depth to prevent infinite pipelines (default: 14, recommended max: 16)"
     )
 
     parser.add_argument(
