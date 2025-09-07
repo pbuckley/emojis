@@ -174,7 +174,7 @@ def generate_dynamic_pipeline(
 
     Args:
         starting_position: Starting position in Fibonacci sequence
-        max_depth: Maximum recursion depth
+        max_depth: Maximum number of Fibonacci groups to generate
         emoji_file: Path to emoji options file
 
     Returns:
@@ -184,39 +184,44 @@ def generate_dynamic_pipeline(
         https://buildkite.com/docs/pipelines/defining-steps
         https://buildkite.com/docs/pipelines/group-step
     """
-    if starting_position >= max_depth:
-        # Base case: create a simple completion step
-        return {
-            "steps": [{
-                "label": "🏁 Fibonacci sequence complete!",
-                "command": "echo 'Reached maximum depth or sequence end'",
-                "key": "completion"
-            }]
-        }
-
     emoji_options = load_emoji_options(emoji_file)
     steps = []
 
-    # Generate one group step for each Fibonacci position up to max_depth
-    for position in range(starting_position, min(max_depth + 1, starting_position + 5)):
-        current_fib_value = fibonacci(position)
+    # Generate Fibonacci groups, limiting the number of groups (not position)
+    groups_generated = 0
+    current_position = starting_position
+
+    while groups_generated < max_depth and current_position <= 20:  # Cap position at 20
+        current_fib_value = fibonacci(current_position)
 
         # Skip if Fibonacci value gets too large (avoid overwhelming the UI)
         if current_fib_value > 20:
             break
 
         group_step = create_pipeline_step(
-            position,
+            current_position,
             current_fib_value,
             emoji_options,
             max_depth
         )
         steps.append(group_step)
 
+        groups_generated += 1
+        current_position += 1
+
+    # If no groups were generated, add a completion message
+    if not steps:
+        steps = [{
+            "label": "🏁 Fibonacci sequence parameters too large",
+            "command": f"echo 'Starting position {starting_position} would create Fibonacci value {fibonacci(starting_position)} steps'",
+            "key": "too-large"
+        }]
+
     pipeline = {
         "env": {
             "FIBONACCI_PIPELINE": "true",
-            "PIPELINE_DEPTH": str(starting_position)
+            "PIPELINE_DEPTH": str(starting_position),
+            "GROUPS_GENERATED": str(len(steps))
         },
         "steps": steps
     }
