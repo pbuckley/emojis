@@ -168,8 +168,9 @@ def generate_dynamic_pipeline(
     """
     Generate the complete dynamic pipeline configuration.
 
-    This is the conductor orchestrating our Fibonacci symphony - it determines
-    how many musicians (steps) we need and what each should play.
+    This creates a visual Fibonacci sequence where each Fib(N) becomes a group
+    containing N sub-steps. Like building a pyramid where each level has more
+    blocks than the last, following the mathematical beauty of Fibonacci.
 
     Args:
         starting_position: Starting position in Fibonacci sequence
@@ -181,6 +182,7 @@ def generate_dynamic_pipeline(
 
     Reference:
         https://buildkite.com/docs/pipelines/defining-steps
+        https://buildkite.com/docs/pipelines/group-step
     """
     if starting_position >= max_depth:
         # Base case: create a simple completion step
@@ -193,18 +195,23 @@ def generate_dynamic_pipeline(
         }
 
     emoji_options = load_emoji_options(emoji_file)
-    current_fib_value = fibonacci(starting_position)
     steps = []
 
-    # Generate steps equal to current Fibonacci value
-    for i in range(current_fib_value):
-        step = create_pipeline_step(
-            starting_position + i,
-            fibonacci(starting_position + i),
+    # Generate one group step for each Fibonacci position up to max_depth
+    for position in range(starting_position, min(max_depth + 1, starting_position + 5)):
+        current_fib_value = fibonacci(position)
+
+        # Skip if Fibonacci value gets too large (avoid overwhelming the UI)
+        if current_fib_value > 20:
+            break
+
+        group_step = create_pipeline_step(
+            position,
+            current_fib_value,
             emoji_options,
             max_depth
         )
-        steps.append(step)
+        steps.append(group_step)
 
     pipeline = {
         "env": {
