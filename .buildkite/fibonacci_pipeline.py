@@ -259,35 +259,201 @@ def generate_dynamic_pipeline(
     return pipeline
 
 
-def upload_pipeline(pipeline_config: Dict) -> None:
+def chunk_steps_by_count(steps: List[Dict], chunk_size: int = 450) -> List[List[Dict]]:
     """
-    Upload the pipeline configuration to Buildkite.
+    Chunk pipeline steps into batches to avoid Buildkite's 500-step limit.
 
-    Like submitting a job to a batch scheduler - we're telling the system
-    what work needs to be done and how to do it.
+    Like splitting a large dataset into manageable batches for processing -
+    we need to stay under the 500-step API limit per upload.
+
+    Args:
+        steps: List of pipeline steps to chunk
+        chunk_size: Maximum steps per chunk (default: 450 for safety margin)
+
+    Returns:
+        List of step chunks, each containing <= chunk_size steps
+    """
+    chunks = []
+
+    for i in range(0, len(steps), chunk_size):
+        chunk = steps[i:i + chunk_size]
+        chunks.append(chunk)
+
+    return chunks
+
+
+def count_total_jobs_in_steps(steps: List[Dict]) -> int:
+    """
+    Count the total number of jobs (including nested jobs in groups).
+
+    Groups can contain multiple sub-steps, so we need to count them all
+    to accurately determine if we're approaching the 500-job limit.
+
+    Args:
+        steps: List of pipeline steps
+
+    Returns:
+        Total count of individual jobs
+    """
+    total_jobs = 0
+
+    for step in steps:
+        if step.get("group"):
+            # Group step - count all nested steps
+            nested_steps = step.get("steps", [])
+            total_jobs += len(nested_steps)
+        else:
+            # Regular step - count as 1 job
+            total_jobs += 1
+
+    return total_jobs
+
+
+def chunk_steps_by_jobs(steps: List[Dict], max_jobs_per_chunk: int = 450) -> List[List[Dict]]:
+    """
+    Chunk pipeline steps by total job count instead of step count.
+
+    This is more accurate for group steps since one group can contain
+    hundreds of individual jobs. Like a memory allocator that considers
+    actual object sizes rather than just object count.
+
+    Args:
+        steps: List of pipeline steps to chunk
+        max_jobs_per_chunk: Maximum jobs per chunk (default: 450 for safety)
+
+    Returns:
+        List of step chunks, each containing <= max_jobs_per_chunk total jobs
+    """
+    chunks = []
+    current_chunk = []
+    current_job_count = 0
+
+    for step in steps:
+        # Calculate jobs in this step
+        if step.get("group"):
+            step_job_count = len(step.get("steps", []))
+        else:
+            step_job_count = 1
+
+        # If adding this step would exceed limit, start new chunk
+        if current_job_count + step_job_count > max_jobs_per_chunk and current_chunk:
+            chunks.append(current_chunk)
+            current_chunk = []
+            current_job_count = 0
+
+        current_chunk.append(step)
+        current_job_count += step_job_count
+
+    # Add remaining steps to final chunk
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
+
+def upload_pipeline(pipeline_config: Dict, chunk_uploads: bool = True, dry_run: bool = False) -> None:
+    """
+    Upload the pipeline configuration to Buildkite with chunking support.
+
+    Like submitting multiple batch jobs instead of one massive job -
+    we split large pipelines into chunks to respect Buildkite's 500-job limit.
 
     Args:
         pipeline_config: Complete pipeline configuration
+        chunk_uploads: Whether to chunk uploads for large pipelines
+        dry_run: Whether this is a dry run (affects debug output behavior)
 
     Reference:
         https://buildkite.com/docs/agent/v3/cli-pipeline
+        https://buildkite.com/docs/pipelines/configure/dynamic-pipelines
     """
     try:
-        # Convert to YAML for Buildkite
-        yaml_output = yaml.dump(pipeline_config, default_flow_style=False)
+        steps = pipeline_config.get("steps", [])
+        env_vars = pipeline_config.get("env", {})
 
-        # In a real Buildkite environment, this would be piped to buildkite-agent
-        if os.getenv('BUILDKITE'):
-            # Running in actual Buildkite environment
+        # Count total jobs to determine if chunking is needed
+        total_jobs = count_total_jobs_in_steps(steps)
+        total_steps = len(steps)
+
+        print(f"DEBUG: Total groups: {total_steps}, Total jobs: {total_jobs}", file=sys.stderr)
+        print(f"DEBUG: Chunk uploads enabled: {chunk_uploads}", file=sys.stderr)
+
+        # Determine if we need chunking
+        needs_chunking = chunk_uploads and total_jobs > 450
+        is_buildkite_env = bool(os.getenv('BUILDKITE'))
+
+        print(f"DEBUG: Needs chunking: {needs_chunking} (jobs > 450 and chunking enabled)", file=sys.stderr)
+        print(f"DEBUG: Running in Buildkite: {is_buildkite_env}", file=sys.stderr)
+
+        # Show chunking analysis even in dry-run mode
+        if needs_chunking:
+            step_chunks = chunk_steps_by_jobs(steps, max_jobs_per_chunk=450)
+            print(f"DEBUG: Would chunk into {len(step_chunks)} uploads:", file=sys.stderr)
+            for i, chunk in enumerate(step_chunks):
+                chunk_jobs = count_total_jobs_in_steps(chunk)
+                chunk_groups = len(chunk)
+                print(f"DEBUG:   Chunk {i + 1}: {chunk_groups} groups, {chunk_jobs} jobs", file=sys.stderr)
+        else:
+            print("DEBUG: Single upload - no chunking needed", file=sys.stderr)
+
+        # Handle the actual upload logic
+        if dry_run or not is_buildkite_env:
+            # Dry run or development mode - just print the pipeline with debug info
+            if needs_chunking and not dry_run:
+                # Only show the chunking warning if not explicitly in dry-run mode
+                print(f"# WARNING: {total_jobs} jobs exceeds Buildkite's 500-job limit!", file=sys.stderr)
+                print("# This pipeline would be chunked when uploaded to Buildkite", file=sys.stderr)
+
+            print("# Generated Buildkite Pipeline YAML")
+            print("# " + "=" * 50)
+            yaml_output = yaml.dump(pipeline_config, default_flow_style=False)
+            print(yaml_output)
+
+        elif needs_chunking:
+            # Production mode with chunking needed
+            print(f"DEBUG: Executing chunked upload - {total_jobs} jobs in {len(step_chunks)} chunks", file=sys.stderr)
+
+            step_chunks = chunk_steps_by_jobs(steps, max_jobs_per_chunk=450)
+
+            # Upload each chunk separately
+            for i, chunk in enumerate(step_chunks):
+                chunk_config = {
+                    "env": env_vars,
+                    "steps": chunk
+                }
+
+                chunk_yaml = yaml.dump(chunk_config, default_flow_style=False)
+                chunk_jobs = count_total_jobs_in_steps(chunk)
+
+                print(f"DEBUG: Uploading chunk {i + 1}/{len(step_chunks)} ({len(chunk)} groups, {chunk_jobs} jobs)", file=sys.stderr)
+
+                # Upload this chunk
+                import subprocess
+                process = subprocess.Popen(['buildkite-agent', 'pipeline', 'upload'],
+                                         stdin=subprocess.PIPE, text=True)
+                process.communicate(input=chunk_yaml)
+
+                if process.returncode != 0:
+                    print(f"Error uploading chunk {i + 1}: exit code {process.returncode}", file=sys.stderr)
+                    sys.exit(1)
+
+            print(f"DEBUG: Successfully uploaded {len(step_chunks)} chunks", file=sys.stderr)
+
+        else:
+            # Production mode, single upload
+            print(f"DEBUG: Executing single upload - {total_jobs} jobs under limit", file=sys.stderr)
+            yaml_output = yaml.dump(pipeline_config, default_flow_style=False)
+
             import subprocess
             process = subprocess.Popen(['buildkite-agent', 'pipeline', 'upload'],
                                      stdin=subprocess.PIPE, text=True)
             process.communicate(input=yaml_output)
-        else:
-            # Development/demo mode - just print the pipeline
-            print("# Generated Buildkite Pipeline YAML")
-            print("# " + "=" * 50)
-            print(yaml_output)
+
+            if process.returncode != 0:
+                print(f"Error uploading pipeline: exit code {process.returncode}", file=sys.stderr)
+                sys.exit(1)
+
+            print("DEBUG: Successfully uploaded single pipeline", file=sys.stderr)
 
     except Exception as e:
         print(f"Error uploading pipeline: {e}", file=sys.stderr)
@@ -332,6 +498,20 @@ def main():
         help="Print pipeline YAML without uploading"
     )
 
+    parser.add_argument(
+        "--chunk-uploads",
+        action="store_true",
+        default=True,
+        help="Enable chunked uploads for large pipelines (default: True)"
+    )
+
+    parser.add_argument(
+        "--no-chunk-uploads",
+        dest="chunk_uploads",
+        action="store_false",
+        help="Disable chunked uploads (upload entire pipeline at once)"
+    )
+
     args = parser.parse_args()
 
     # Validate arguments
@@ -350,14 +530,15 @@ def main():
         emoji_file=args.emoji_file
     )
 
-    if args.dry_run or not os.getenv('BUILDKITE'):
-        # Print pipeline for inspection
-        yaml_output = yaml.dump(pipeline_config, default_flow_style=False)
-        print(yaml_output)
-    else:
-        upload_pipeline(pipeline_config)
+    # Always call upload_pipeline, passing the dry_run flag
+    upload_pipeline(
+        pipeline_config,
+        chunk_uploads=args.chunk_uploads,
+        dry_run=args.dry_run
+    )
 
-    print(f"Generated pipeline with {len(pipeline_config['steps'])} steps "
+    total_jobs = count_total_jobs_in_steps(pipeline_config.get("steps", []))
+    print(f"Generated pipeline with {len(pipeline_config['steps'])} groups ({total_jobs} total jobs) "
           f"for Fibonacci starting at position {args.position}", file=sys.stderr)
 
 
