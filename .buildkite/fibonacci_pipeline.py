@@ -13,6 +13,7 @@ References:
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import random
@@ -259,7 +260,7 @@ def generate_dynamic_pipeline(
     return pipeline
 
 
-def chunk_steps_by_count(steps: List[Dict], chunk_size: int = 450) -> List[List[Dict]]:
+def chunk_steps_by_count(steps: List[Dict], chunk_size: int = 300) -> List[List[Dict]]:
     """
     Chunk pipeline steps into batches to avoid Buildkite's 500-step limit.
 
@@ -268,7 +269,7 @@ def chunk_steps_by_count(steps: List[Dict], chunk_size: int = 450) -> List[List[
 
     Args:
         steps: List of pipeline steps to chunk
-        chunk_size: Maximum steps per chunk (default: 450 for safety margin)
+        chunk_size: Maximum steps per chunk (default: 300)
 
     Returns:
         List of step chunks, each containing <= chunk_size steps
@@ -309,7 +310,52 @@ def count_total_jobs_in_steps(steps: List[Dict]) -> int:
     return total_jobs
 
 
-def chunk_steps_by_jobs(steps: List[Dict], max_jobs_per_chunk: int = 450) -> List[List[Dict]]:
+def split_group_step(step: Dict, max_jobs_per_chunk: int) -> List[Dict]:
+    """Split an oversized group into independently uploadable group steps."""
+    nested_steps = step.get("steps", [])
+    if not step.get("group") or len(nested_steps) <= max_jobs_per_chunk:
+        return [step]
+
+    parts = []
+    part_count = (len(nested_steps) + max_jobs_per_chunk - 1) // max_jobs_per_chunk
+    for index in range(part_count):
+        part = dict(step)
+        part_number = index + 1
+        part["key"] = f"{step['key']}-part-{part_number}"
+        part["group"] = f"{step['group']} (part {part_number}/{part_count})"
+        start = index * max_jobs_per_chunk
+        part["steps"] = nested_steps[start:start + max_jobs_per_chunk]
+        parts.append(part)
+    return parts
+
+
+def split_oversized_groups(steps: List[Dict], max_jobs_per_chunk: int) -> List[Dict]:
+    """Split groups and update dependencies to refer to every resulting part."""
+    split_steps = []
+    keys_by_original_key = {}
+
+    for step in steps:
+        parts = split_group_step(step, max_jobs_per_chunk)
+        split_steps.extend(parts)
+        if step.get("key"):
+            keys_by_original_key[step["key"]] = [part["key"] for part in parts]
+
+    for step in split_steps:
+        dependencies = step.get("depends_on")
+        if not dependencies:
+            continue
+        dependency_keys = dependencies if isinstance(dependencies, list) else [dependencies]
+        expanded_dependencies = [
+            key
+            for dependency in dependency_keys
+            for key in keys_by_original_key.get(dependency, [dependency])
+        ]
+        step["depends_on"] = expanded_dependencies[0] if len(expanded_dependencies) == 1 else expanded_dependencies
+
+    return split_steps
+
+
+def chunk_steps_by_jobs(steps: List[Dict], max_jobs_per_chunk: int = 300) -> List[List[Dict]]:
     """
     Chunk pipeline steps by total job count instead of step count.
 
@@ -319,16 +365,19 @@ def chunk_steps_by_jobs(steps: List[Dict], max_jobs_per_chunk: int = 450) -> Lis
 
     Args:
         steps: List of pipeline steps to chunk
-        max_jobs_per_chunk: Maximum jobs per chunk (default: 450 for safety)
+        max_jobs_per_chunk: Maximum jobs per chunk (default: 300)
 
     Returns:
         List of step chunks, each containing <= max_jobs_per_chunk total jobs
     """
+    if max_jobs_per_chunk < 1:
+        raise ValueError("max_jobs_per_chunk must be positive")
+
     chunks = []
     current_chunk = []
     current_job_count = 0
 
-    for step in steps:
+    for step in split_oversized_groups(steps, max_jobs_per_chunk):
         # Calculate jobs in this step
         if step.get("group"):
             step_job_count = len(step.get("steps", []))
@@ -351,7 +400,13 @@ def chunk_steps_by_jobs(steps: List[Dict], max_jobs_per_chunk: int = 450) -> Lis
     return chunks
 
 
-def upload_pipeline(pipeline_config: Dict, chunk_uploads: bool = True, dry_run: bool = False) -> None:
+def upload_pipeline(
+    pipeline_config: Dict,
+    chunk_uploads: bool = True,
+    dry_run: bool = False,
+    chunk_size: int = 300,
+    max_parallel_uploads: int = 4,
+) -> None:
     """
     Upload the pipeline configuration to Buildkite with chunking support.
 
@@ -362,6 +417,8 @@ def upload_pipeline(pipeline_config: Dict, chunk_uploads: bool = True, dry_run: 
         pipeline_config: Complete pipeline configuration
         chunk_uploads: Whether to chunk uploads for large pipelines
         dry_run: Whether this is a dry run (affects debug output behavior)
+        chunk_size: Maximum jobs per upload
+        max_parallel_uploads: Maximum concurrent uploads
 
     Reference:
         https://buildkite.com/docs/agent/v3/cli-pipeline
@@ -379,15 +436,15 @@ def upload_pipeline(pipeline_config: Dict, chunk_uploads: bool = True, dry_run: 
         print(f"DEBUG: Chunk uploads enabled: {chunk_uploads}", file=sys.stderr)
 
         # Determine if we need chunking
-        needs_chunking = chunk_uploads and total_jobs > 450
+        needs_chunking = chunk_uploads and total_jobs > chunk_size
         is_buildkite_env = bool(os.getenv('BUILDKITE'))
 
-        print(f"DEBUG: Needs chunking: {needs_chunking} (jobs > 450 and chunking enabled)", file=sys.stderr)
+        print(f"DEBUG: Needs chunking: {needs_chunking} (jobs > {chunk_size} and chunking enabled)", file=sys.stderr)
         print(f"DEBUG: Running in Buildkite: {is_buildkite_env}", file=sys.stderr)
 
         # Show chunking analysis even in dry-run mode
         if needs_chunking:
-            step_chunks = chunk_steps_by_jobs(steps, max_jobs_per_chunk=450)
+            step_chunks = chunk_steps_by_jobs(steps, max_jobs_per_chunk=chunk_size)
             print(f"DEBUG: Would chunk into {len(step_chunks)} uploads:", file=sys.stderr)
             for i, chunk in enumerate(step_chunks):
                 chunk_jobs = count_total_jobs_in_steps(chunk)
@@ -413,29 +470,37 @@ def upload_pipeline(pipeline_config: Dict, chunk_uploads: bool = True, dry_run: 
             # Production mode with chunking needed
             print(f"DEBUG: Executing chunked upload - {total_jobs} jobs in {len(step_chunks)} chunks", file=sys.stderr)
 
-            step_chunks = chunk_steps_by_jobs(steps, max_jobs_per_chunk=450)
+            step_chunks = chunk_steps_by_jobs(steps, max_jobs_per_chunk=chunk_size)
 
-            # Upload each chunk separately
-            for i, chunk in enumerate(step_chunks):
-                chunk_config = {
-                    "env": env_vars,
-                    "steps": chunk
-                }
-
-                chunk_yaml = yaml.dump(chunk_config, default_flow_style=False)
-                chunk_jobs = count_total_jobs_in_steps(chunk)
-
-                print(f"DEBUG: Uploading chunk {i + 1}/{len(step_chunks)} ({len(chunk)} groups, {chunk_jobs} jobs)", file=sys.stderr)
-
-                # Upload this chunk
+            def upload_chunk(index: int, chunk: List[Dict]) -> None:
                 import subprocess
-                process = subprocess.Popen(['buildkite-agent', 'pipeline', 'upload'],
-                                         stdin=subprocess.PIPE, text=True)
-                process.communicate(input=chunk_yaml)
 
+                chunk_config = {"env": env_vars, "steps": chunk}
+                chunk_yaml = yaml.dump(chunk_config, default_flow_style=False)
+                process = subprocess.run(
+                    ["buildkite-agent", "pipeline", "upload"],
+                    input=chunk_yaml,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
                 if process.returncode != 0:
-                    print(f"Error uploading chunk {i + 1}: exit code {process.returncode}", file=sys.stderr)
-                    sys.exit(1)
+                    raise RuntimeError(
+                        f"chunk {index + 1} failed with exit code {process.returncode}: "
+                        f"{process.stderr.strip()}"
+                    )
+                if process.stdout.strip():
+                    print(process.stdout.strip(), file=sys.stderr)
+
+            workers = min(max_parallel_uploads, len(step_chunks))
+            print(f"DEBUG: Uploading with {workers} parallel workers", file=sys.stderr)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [
+                    executor.submit(upload_chunk, index, chunk)
+                    for index, chunk in enumerate(step_chunks)
+                ]
+                for future in as_completed(futures):
+                    future.result()
 
             print(f"DEBUG: Successfully uploaded {len(step_chunks)} chunks", file=sys.stderr)
 
@@ -477,6 +542,20 @@ def main():
         type=int,
         default=1,
         help="Starting position in Fibonacci sequence (default: 1)"
+    )
+
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=300,
+        help="Maximum jobs in each pipeline upload (default: 300)",
+    )
+
+    parser.add_argument(
+        "--max-parallel-uploads",
+        type=int,
+        default=4,
+        help="Maximum concurrent pipeline uploads (default: 4)",
     )
 
     parser.add_argument(
@@ -523,6 +602,14 @@ def main():
         print("Error: Max depth must be at least 1", file=sys.stderr)
         sys.exit(1)
 
+    if args.chunk_size < 1:
+        print("Error: Chunk size must be at least 1", file=sys.stderr)
+        sys.exit(1)
+
+    if args.max_parallel_uploads < 1:
+        print("Error: Max parallel uploads must be at least 1", file=sys.stderr)
+        sys.exit(1)
+
     # Generate and upload/display pipeline
     pipeline_config = generate_dynamic_pipeline(
         starting_position=args.position,
@@ -534,7 +621,9 @@ def main():
     upload_pipeline(
         pipeline_config,
         chunk_uploads=args.chunk_uploads,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        chunk_size=args.chunk_size,
+        max_parallel_uploads=args.max_parallel_uploads,
     )
 
     total_jobs = count_total_jobs_in_steps(pipeline_config.get("steps", []))
