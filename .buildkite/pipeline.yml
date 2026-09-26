@@ -1,6 +1,6 @@
 steps:
   - name: ":spiral_shell: Generate Fibonacci steps"
-    command: "python3 .buildkite/fibonacci_pipeline.py --chunk-size 300 --max-parallel-uploads 4"
+    command: "python3 .buildkite/fibonacci_pipeline.py --chunk-size 400 --max-parallel-uploads 4"
     branches: "fib"
     agents:
       queue: "hosted-linux"

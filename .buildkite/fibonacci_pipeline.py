@@ -260,7 +260,7 @@ def generate_dynamic_pipeline(
     return pipeline
 
 
-def chunk_steps_by_count(steps: List[Dict], chunk_size: int = 300) -> List[List[Dict]]:
+def chunk_steps_by_count(steps: List[Dict], chunk_size: int = 400) -> List[List[Dict]]:
     """
     Chunk pipeline steps into batches to avoid Buildkite's 500-step limit.
 
@@ -269,7 +269,7 @@ def chunk_steps_by_count(steps: List[Dict], chunk_size: int = 300) -> List[List[
 
     Args:
         steps: List of pipeline steps to chunk
-        chunk_size: Maximum steps per chunk (default: 300)
+        chunk_size: Maximum steps per chunk (default: 400)
 
     Returns:
         List of step chunks, each containing <= chunk_size steps
@@ -355,7 +355,7 @@ def split_oversized_groups(steps: List[Dict], max_jobs_per_chunk: int) -> List[D
     return split_steps
 
 
-def chunk_steps_by_jobs(steps: List[Dict], max_jobs_per_chunk: int = 300) -> List[List[Dict]]:
+def chunk_steps_by_jobs(steps: List[Dict], max_jobs_per_chunk: int = 400) -> List[List[Dict]]:
     """
     Chunk pipeline steps by total job count instead of step count.
 
@@ -365,7 +365,7 @@ def chunk_steps_by_jobs(steps: List[Dict], max_jobs_per_chunk: int = 300) -> Lis
 
     Args:
         steps: List of pipeline steps to chunk
-        max_jobs_per_chunk: Maximum jobs per chunk (default: 300)
+        max_jobs_per_chunk: Maximum jobs per chunk (default: 400)
 
     Returns:
         List of step chunks, each containing <= max_jobs_per_chunk total jobs
@@ -404,7 +404,7 @@ def upload_pipeline(
     pipeline_config: Dict,
     chunk_uploads: bool = True,
     dry_run: bool = False,
-    chunk_size: int = 300,
+    chunk_size: int = 400,
     max_parallel_uploads: int = 4,
 ) -> None:
     """
@@ -547,8 +547,8 @@ def main():
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=300,
-        help="Maximum jobs in each pipeline upload (default: 300)",
+        default=400,
+        help="Maximum jobs in each pipeline upload (default: 400)",
     )
 
     parser.add_argument(
