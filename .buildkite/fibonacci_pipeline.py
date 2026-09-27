@@ -120,7 +120,8 @@ def create_pipeline_step(
     fib_position: int,
     current_fib_value: int,
     emoji_options: List[str],
-    max_depth: int = 10
+    end_position: int,
+    chunk_size: int,
 ) -> Dict:
     """
     Create a Buildkite group step containing N sub-steps.
@@ -133,7 +134,8 @@ def create_pipeline_step(
         fib_position: Current position in Fibonacci sequence
         current_fib_value: The Fibonacci value at current position (number of sub-steps)
         emoji_options: Available emojis for labels
-        max_depth: Maximum recursion depth to prevent infinite pipelines
+        end_position: Final Fibonacci position in this build
+        chunk_size: Maximum jobs in a follow-up pipeline upload
 
     Returns:
         Dictionary representing a Buildkite group step
@@ -165,7 +167,26 @@ def create_pipeline_step(
 
         nested_steps.append(sub_step)
 
-    # Create the main group step
+    # The last job in each group uploads only the next group. This makes the
+    # sequence appear incrementally in the Buildkite canvas rather than all at
+    # once from the bootstrap job.
+    if fib_position < end_position:
+        next_position = fib_position + 1
+        upload_step = {
+            "label": f":pipeline: Generate Fib({next_position})",
+            "command": (
+                "python3 .buildkite/fibonacci_pipeline.py "
+                f"--position {next_position} "
+                f"--end-position {end_position} "
+                f"--chunk-size {chunk_size}"
+            ),
+            "key": f"fib-{fib_position}-next",
+        }
+        if nested_steps:
+            upload_step["depends_on"] = [step["key"] for step in nested_steps]
+        nested_steps.append(upload_step)
+
+    # Create the main group step.
     group_emoji = generate_emoji_label(current_fib_value, emoji_options)
 
     group_step = {
@@ -184,19 +205,22 @@ def create_pipeline_step(
 def generate_dynamic_pipeline(
     starting_position: int = 1,
     max_depth: int = 14,
-    emoji_file: str = "README.md"
+    emoji_file: str = "README.md",
+    end_position: int = None,
+    chunk_size: int = 400,
 ) -> Dict:
     """
     Generate the complete dynamic pipeline configuration.
 
-    This creates a visual Fibonacci sequence where each Fib(N) becomes a group
-    containing N sub-steps. Like building a pyramid where each level has more
-    blocks than the last, following the mathematical beauty of Fibonacci.
+    This creates one Fibonacci group and gives it a final job that dynamically
+    uploads the next group. The canvas therefore grows one group at a time.
 
     Args:
         starting_position: Starting position in Fibonacci sequence
-        max_depth: Maximum number of Fibonacci groups to generate
+        max_depth: Number of groups to generate when end_position is omitted
         emoji_file: Path to emoji options file
+        end_position: Final Fibonacci position in the sequence
+        chunk_size: Maximum jobs in a follow-up pipeline upload
 
     Returns:
         Complete pipeline configuration dictionary
@@ -206,37 +230,34 @@ def generate_dynamic_pipeline(
         https://buildkite.com/docs/pipelines/group-step
     """
     emoji_options = load_emoji_options(emoji_file)
+    if end_position is None:
+        end_position = starting_position + max_depth - 1
+
+    print(
+        f"DEBUG: Generating Fib({starting_position}) with end_position={end_position}",
+        file=sys.stderr,
+    )
     steps = []
+    current_fib_value = fibonacci(starting_position)
 
-    # Debug output
-    print(f"DEBUG: Starting pipeline generation with position={starting_position}, max_depth={max_depth}", file=sys.stderr)
-
-    # Generate Fibonacci groups, limiting the number of groups (not position)
-    groups_generated = 0
-    current_position = starting_position
-
-    while groups_generated < max_depth and current_position <= 30:  # Position cap to prevent runaway
-        current_fib_value = fibonacci(current_position)
-
-        print(f"DEBUG: Checking position {current_position}, Fib({current_position})={current_fib_value}, groups_generated={groups_generated}", file=sys.stderr)
-
-        # Only skip if we're creating truly massive individual groups that would break the UI
-        if current_fib_value > 5000:  # Much higher limit - let max_depth be the real control
-            print(f"DEBUG: Stopping - Fib({current_position}) = {current_fib_value} would create too many sub-steps", file=sys.stderr)
-            break
-
-        group_step = create_pipeline_step(
-            current_position,
-            current_fib_value,
-            emoji_options,
-            max_depth
-        )
-        steps.append(group_step)
-
-        print(f"DEBUG: Added group {groups_generated + 1}: Fib({current_position}) = {current_fib_value}", file=sys.stderr)
-
-        groups_generated += 1
-        current_position += 1
+    if starting_position <= end_position and starting_position <= 30:
+        if current_fib_value <= 5000:
+            steps.append(create_pipeline_step(
+                starting_position,
+                current_fib_value,
+                emoji_options,
+                end_position,
+                chunk_size,
+            ))
+            print(
+                f"DEBUG: Added Fib({starting_position}) = {current_fib_value}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"DEBUG: Stopping - Fib({starting_position}) = {current_fib_value} would create too many sub-steps",
+                file=sys.stderr,
+            )
 
     # If no groups were generated, add a completion message
     if not steps:
@@ -246,12 +267,13 @@ def generate_dynamic_pipeline(
             "key": "too-large"
         }]
 
-    print(f"DEBUG: Final result - generated {len(steps)} groups", file=sys.stderr)
+    print(f"DEBUG: Final result - generated {len(steps)} group", file=sys.stderr)
 
     pipeline = {
         "env": {
             "FIBONACCI_PIPELINE": "true",
             "PIPELINE_DEPTH": str(starting_position),
+            "PIPELINE_END_POSITION": str(end_position),
             "GROUPS_GENERATED": str(len(steps))
         },
         "steps": steps
@@ -562,7 +584,13 @@ def main():
         "--max-depth",
         type=int,
         default=14,
-        help="Maximum recursion depth to prevent infinite pipelines (default: 14, recommended max: 16)"
+        help="Number of groups when --end-position is omitted (default: 14)"
+    )
+
+    parser.add_argument(
+        "--end-position",
+        type=int,
+        help="Final Fibonacci position in the dynamic sequence"
     )
 
     parser.add_argument(
@@ -602,6 +630,10 @@ def main():
         print("Error: Max depth must be at least 1", file=sys.stderr)
         sys.exit(1)
 
+    if args.end_position is not None and args.end_position < args.position:
+        print("Error: End position must not be less than position", file=sys.stderr)
+        sys.exit(1)
+
     if args.chunk_size < 1:
         print("Error: Chunk size must be at least 1", file=sys.stderr)
         sys.exit(1)
@@ -614,7 +646,9 @@ def main():
     pipeline_config = generate_dynamic_pipeline(
         starting_position=args.position,
         max_depth=args.max_depth,
-        emoji_file=args.emoji_file
+        emoji_file=args.emoji_file,
+        end_position=args.end_position,
+        chunk_size=args.chunk_size,
     )
 
     # Always call upload_pipeline, passing the dry_run flag
