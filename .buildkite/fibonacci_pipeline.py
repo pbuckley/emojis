@@ -25,6 +25,20 @@ from typing import Dict, List
 import yaml
 
 
+DIGIT_EMOJI = {
+    "0": ":zero:",
+    "1": ":one:",
+    "2": ":two:",
+    "3": ":three:",
+    "4": ":four:",
+    "5": ":five:",
+    "6": ":six:",
+    "7": ":seven:",
+    "8": ":eight:",
+    "9": ":nine:",
+}
+
+
 @lru_cache(maxsize=128)
 def fibonacci(n: int) -> int:
     """
@@ -116,6 +130,16 @@ def generate_emoji_label(count: int, emoji_options: List[str]) -> str:
     return chosen_emoji
 
 
+def emoji_number(value: int) -> str:
+    """Render a non-negative integer with Buildkite's digit emoji aliases."""
+    return "".join(DIGIT_EMOJI[digit] for digit in str(value))
+
+
+def fibonacci_label(position: int, value: int) -> str:
+    """Create the emoji-first label used for each Fibonacci group."""
+    return f"Fib({emoji_number(position)}) :heavy_equals_sign: {emoji_number(value)}"
+
+
 def create_pipeline_step(
     fib_position: int,
     current_fib_value: int,
@@ -173,7 +197,7 @@ def create_pipeline_step(
     if fib_position < end_position:
         next_position = fib_position + 1
         upload_step = {
-            "label": f":pipeline: Generate Fib({next_position})",
+            "label": f":pipeline: Generate Fib({emoji_number(next_position)})",
             "command": (
                 "python3 .buildkite/fibonacci_pipeline.py "
                 f"--position {next_position} "
@@ -190,7 +214,7 @@ def create_pipeline_step(
     group_emoji = generate_emoji_label(current_fib_value, emoji_options)
 
     group_step = {
-        "group": f"{group_emoji} Fib({fib_position}) = {current_fib_value}",
+        "group": f"{group_emoji} {fibonacci_label(fib_position, current_fib_value)}",
         "key": f"fib-{fib_position}",
         "steps": nested_steps
     }
